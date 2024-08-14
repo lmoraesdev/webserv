@@ -159,7 +159,7 @@ void PostMethod::saveFile(std::string &fileName, const std::string &value)
 {
     std::string resourcePath = getDir();
 
-    resourcePath = resourcePath + "/" + this->_req.getRoot() + "/method/" + fileName;
+    resourcePath = resourcePath + "/" + this->_req.getRoot() + "/files/" + fileName;
     std::ifstream checkFile(resourcePath.c_str());
     if (checkFile.good())
     {
