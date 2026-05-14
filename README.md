@@ -1,78 +1,142 @@
-<h1 align=center>
-	<b>webserv</b>
-</h1>
+*This project was created as part of the 42 curriculum by lmoraes.*
 
-<h2 align=center>
-	 <i>42cursus' project</i>
-</h2>
+# webserv
 
-<p align=center>
-	O projeto `webserv` é parte integrante do currículo da 42 São Paulo, focado em desenvolver um servidor HTTP a partir do zero, conforme as especificações do RFC 7230 até 7235.
-</p>
+A non-blocking HTTP/1.1 server written from scratch in C++98. No frameworks, no libraries — just sockets, `poll()`, and the RFC.
+
+![c++](https://img.shields.io/badge/C%2B%2B-98-00599C?logo=cplusplus&logoColor=white)
+![http](https://img.shields.io/badge/HTTP%2F1.1-RFC%207230--7235-blue)
+![status](https://img.shields.io/badge/status-functional-green)
 
 ---
 
-<h2>
-Descrição
-</h2>
+## Description
 
-O `webserv` é um projeto desafiador que visa a construção de um servidor HTTP que seja capaz de lidar com várias requisições simultâneas, suportar diferentes métodos HTTP (GET, POST, DELETE, etc.) e seguir os padrões definidos pelo RFC 7230 até 7235. Este projeto é uma excelente oportunidade para entender melhor os protocolos de comunicação na web e desenvolver habilidades em programação de rede e gerenciamento de processos.
+The goal was to build an HTTP server that holds up under the same kind of constraints a production server has to deal with: many clients connected at the same time, no thread per request, configurable routes, and behavior consistent with the RFC under load.
 
----
+The project forced me to think about networking, parsing, and resource management at a level most web work hides behind a framework.
 
-<h2>
-Objetivos
-</h2>
+## What it does
 
-O projeto `webserv` tem como objetivos principais:
+- Listens on multiple `interface:port` pairs defined in an NGINX-style config file
+- Handles many concurrent connections through a single `poll()` loop (no threads, no fork-per-request, no read/write outside of `poll`)
+- Parses HTTP/1.1 requests by hand — request line, headers, body
+- Serves `GET`, `POST`, and `DELETE`
+- Serves static files, lists directories when `autoindex` is on, applies index files and custom error pages
+- Supports HTTP redirects per route
+- Supports file upload via `multipart/form-data` with a configurable upload directory
+- Runs CGI scripts based on file extension (executed via `execve`, communicates over pipes)
+- Returns proper status codes and stays available under sustained load
+- Enforces `client_max_body_size` per server
 
-- Implementar um servidor HTTP conforme as especificações do RFC 7230 até 7235.
-- Gerenciar várias conexões simultâneas e requisições concorrentes.
-- Suportar os métodos HTTP mais comuns, como GET, POST e DELETE.
-- Manter uma arquitetura modular e escalável, facilitando futuras expansões e manutenção.
+## Architecture
 
----
-
-<h2>
-Requisitos do Projeto
-</h2>
-
-- **Servidor HTTP**: Capaz de responder a requisições HTTP e seguir as especificações do RFC 7230 até 7235.
-- **Gerenciamento de Conexões**: Lidar com múltiplas conexões simultâneas, garantindo eficiência e escalabilidade.
-- **Métodos HTTP Suportados**: Implementação dos métodos GET, POST e DELETE.
-- **Configuração**: O servidor deve ser configurável através de arquivos de configuração detalhados.
-- **Log de Atividades**: Manter um registro de todas as requisições recebidas e as respostas enviadas.
-
----
-
-<h2>
-Implementação
-</h2>
-
-### Clone este repositório
-
-Clone o repositório `webserv` para sua máquina local:
-
-```sh
-git clone https://github.com/lmoraesdev/webserv.git
+```
+                ┌──────────────┐
+                │  Config      │   parses NGINX-style file once at boot
+                └──────┬───────┘
+                       ▼
+                ┌──────────────┐
+client ───────▶ │  poll() loop │ ──┐  one loop, all sockets non-blocking
+                └──────┬───────┘   │
+                       ▼            │
+                ┌─────────────┐     │
+                │  Request    │ ◀───┘  parses bytes as they arrive
+                │  parser     │
+                └──────┬──────┘
+                       ▼
+                ┌──────────────┐
+                │  Handler     │  static / upload / CGI / redirect / error
+                └──────┬───────┘
+                       ▼
+                ┌──────────────┐
+                │  Response    │  writes back when socket is ready
+                └──────────────┘
 ```
 
-<h2>
-Compilação
-</h2>
+Every socket — listening or connected — is registered with the same `poll()` call. When the kernel reports a socket as ready to read or write, the loop services it for one step and goes back to polling. No request blocks another, and no read or write happens without `poll()` clearing it first.
 
-Navegue até o diretório do projeto e compile o servidor:
-```sh
+## Project layout
+
+```
+.
+├── Makefile
+├── main.cpp
+├── includes/        # headers
+├── src/             # server, parser, response, CGI, config
+├── config/          # example config files
+└── www/             # default document root for testing
+```
+
+## Instructions
+
+Requires a C++98 compiler (`g++` works) and `make`. Tested on Linux.
+
+```bash
+git clone https://github.com/lmoraesdev/webserv.git
 cd webserv
 make
+./webserv config/default.conf
 ```
 
-<h2>
-Uso
-</h2>
+Then point a browser or `curl` at any of the host/port pairs declared in the config:
 
-Execute o servidor com o comando:
-```sh
-./webserv path/to/configuration/file
+```bash
+curl -i http://localhost:8080/
+curl -i -X POST -F "file=@photo.png" http://localhost:8080/upload
 ```
-O arquivo de configuração deve especificar as portas, diretórios raiz e outras configurações relevantes para o servidor HTTP.
+
+## Configuration
+
+The server reads an NGINX-style config file. A minimal example:
+
+```nginx
+server {
+    listen          8080;
+    root            ./www;
+    index           index.html;
+    error_page 404  /errors/404.html;
+    client_max_body_size 10M;
+
+    location / {
+        allow_methods   GET POST DELETE;
+        autoindex       on;
+    }
+
+    location /old {
+        return 301 /new;
+    }
+
+    location /upload {
+        allow_methods   POST;
+        upload_store    ./uploads;
+    }
+
+    location /cgi-bin/ {
+        cgi_extension   .py;
+        cgi_path        /usr/bin/python3;
+    }
+}
+```
+
+Multiple `server` blocks on different ports are supported.
+
+## What I learned
+
+- That `poll()` looks simple in the man page and is brutal in practice — the bug isn't in poll, it's in how you treat partial reads, half-closed sockets, and the order of events you process
+- How TCP actually behaves: requests don't arrive in one piece, responses don't leave in one piece, and any code that assumes they do will eventually break
+- Why writing an HTTP parser by hand makes you respect every framework that did it for you
+- The cost of every `malloc`, every `read`, every `close` when there are no abstractions to hide them
+- That C++98 without smart pointers is a real exercise in RAII discipline
+
+## Resources
+
+- [RFC 7230](https://datatracker.ietf.org/doc/html/rfc7230) — HTTP/1.1 message syntax
+- [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231) — HTTP/1.1 semantics
+- [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
+- [NGINX directives](https://nginx.org/en/docs/dirindex.html)
+- [CGI specification — RFC 3875](https://datatracker.ietf.org/doc/html/rfc3875)
+
+### Note on AI
+
+This project was delivered before AI assistants were allowed by the 42 curriculum. All design, code, and debugging were done manually using the RFCs, man pages, and peer discussions.
